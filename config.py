@@ -2,10 +2,11 @@ from easydict import EasyDict as edict
 # construct parameters for different method
 SD_param = edict()
 ND_param = edict()
+CD_param = edict()
 
 # decide if SD is driven by data
 SD_param['data_driven'] = False
-# FLOPs compression ratio for each layer
+# FLOPs compression ratio (per layer) for each layer in SD
 SD_param['c_ratio'] = 3
 # enable trigger for SD
 SD_param['enable'] = False
@@ -14,6 +15,12 @@ SD_param['enable'] = False
 ND_param['energy_threshold'] = 0.9
 # enable trigger for ND
 ND_param['enable'] = True
+
+# FLOPs compression ratio (per layer) for each layer in CD
+CD_param['c_ratio'] = 2
+# enable trigger for CD
+CD_param['enable'] = False 
+
 
 # dict containg layers not requiring spatial decomposition
 mask_layers = ['conv1'] + ['res%da_branch2a' % i for i in range(3,6)] + ['res%da_brach2b' % i for i in range(3,6)] + ['res%da_brach1' % i for i in range(3,6)]

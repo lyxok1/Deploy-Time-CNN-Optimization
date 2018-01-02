@@ -281,7 +281,7 @@ def ITQ_decompose(feature, gt_feature, weight, rank, bias=None, DEBUG=False, Wr=
         W1 = weight.reshape([-1, n_filter_channels]).dot(L)
         W1 = W1.reshape([dim[0], dim[1], dim[2], rank])
 
-    W2 = R
+    W2 = R.copy()
     if right:
         W12 = W12.dot(W2)
     else:
@@ -310,7 +310,7 @@ def ITQ_decompose(feature, gt_feature, weight, rank, bias=None, DEBUG=False, Wr=
         epscheck(W2 , 4)
         epscheck(B  ,  4)
         epscheck(W12,4)
-    return W1, W2, B, W12
+    return W1, W2, B, W12, R
 
 def get_cost(weight_dim, feature_dim, rank, method):
     feature_pixels = feature_dim[2] * feature_dim[3]

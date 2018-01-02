@@ -16,7 +16,7 @@ from utils import underline, OK, shell, Timer
 
 class Net():
     def __init__(self, pt, model=None, phase = caffe.TEST, accname=None, mask_layers=None,\
-        SD_param=None, ND_param=None, gpu=None, nSamples=None, nPointsPerSample=None, frozen_name=None):
+        SD_param=None, ND_param=None, CD_param=None, gpu=None, nSamples=None, nPointsPerSample=None, frozen_name=None):
 
         self.caffe_device()
         if gpu is None:
@@ -55,6 +55,7 @@ class Net():
         self.mask_layers = mask_layers if mask_layers is not None else cfgs.mask_layers
         self.ND_param = ND_param if ND_param is not None else cfgs.ND_param
         self.SD_param = SD_param if SD_param is not None else cfgs.SD_param
+        self.CD_param = CD_param if CD_param is not None else cfgs.CD_param
         self.nSamples = nSamples if nSamples is not None else cfgs.nSamples
         self.nPointsPerSample = nPointsPerSample if nPointsPerSample is not None else cfgs.nPointsPerSample
         self.frozen_name = frozen_name if frozen_name is not None else cfgs.frozen_name
@@ -991,19 +992,32 @@ class Net():
         return WPQ, pt, model
 
     def decompose(self):
-        speed_ratio = self.SD_param.c_ratio
+        sd_speed_ratio = self.SD_param.c_ratio
+        cd_speed_ratio = self.CD_param.c_ratio
+
+        # now we are not implementing the combination of sd + cd
+        if self.SD_param.enable and self.CD_param.enable:
+            NotImplementedError
+
         # make prefix
         prefix = ''
         if self.SD_param.enable:
             rate = str(self.SD_param.c_ratio)
             if '.' in rate:
                 rate = rate.replace('.','_')
-            prefix += rate
+            prefix += (rate+'_')
+
+        if self.CD_param.enable:
+            rate = str(self.CD_param.c_ratio)
+            if '.' in rate:
+                rate = rate.replace('.','_')
+            prefix += (rate+'_')
+
         if self.ND_param.enable:
             thresh = str(self.ND_param.energy_threshold)
             if '.' in thresh:
                 thresh = thresh.replace('.','_')
-            prefix += thresh
+            prefix += (thresh+'_')
 
         DEBUG = False
         convs= self.convs
@@ -1017,7 +1031,18 @@ class Net():
                 ci = wshape[1]
                 h = wshape[2]
                 w = wshape[3]
-                rankdic[layer] = int((ci*co*h*w)/(speed_ratio*(h*ci+w*co)))
+                rankdic[layer] = int((ci*co*h*w)/(sd_speed_ratio*(h*ci+w*co)))
+
+        primedict = dict()
+        for layer in convs:
+            if layer not in self.mask_layers:
+                wshape = self.param_shape(layer)
+                co = wshape[0]
+                ci = wshape[1]
+                h = wshape[2]
+                w = wshape[3]
+                primedict[layer] = int((ci*co*h*w)/(cd_speed_ratio)*(h*w*ci+co))
+
 
         def getX(name):
             _, _, kh, kw = self.param_shape(name)
@@ -1030,17 +1055,19 @@ class Net():
         t = Timer()
         decouple_convs = [layer for layer in convs if layer not in self.mask_layers]
 
-        if self.SD_param.data_driven:
+        if (self.SD_param.data_driven and self.SD_param.enable) or self.CD_param.enable:
             self.load_frozen()
 
         for conv in decouple_convs:
-            # neither of ND and SD could process 1x1 conv, so pass such layers
-            W_shape = self.param_shape(conv)
-            if W_shape[2]==1 and W_shape[3]==1:
-                continue
             """spatial decomposition and network decoupling at the same time"""
             if self.SD_param.enable and self.ND_param.enable:
+                # neither of ND and SD could process 1x1 conv, so pass such layers
+                W_shape = self.param_shape(conv)
+                if W_shape[2]==1 and W_shape[3]==1:
+                    continue
+
                 t.tic()
+                print('spatial decomposition for %s' % conv)
                 conv_V = underline(conv, 'V')              
                 conv_H = underline(conv, 'H')
                 rank = rankdic[conv]
@@ -1065,7 +1092,7 @@ class Net():
                 t.tic()
                 print('decoupling for %s and %s' %(conv_V, conv_H))
                 '''decoupling for V'''
-                energy_ratio = 0.9
+                energy_ratio = self.ND_param.energy_threshold
                 weights = V # rank, c, h, 1
                 
                 depth_V, point_V, weights_approx = Network_decouple(weights, energy_threshold=energy_ratio)
@@ -1112,7 +1139,6 @@ class Net():
                         self.insert(bottom, new_p, pad=0, kernel_size=1, stride=1, num_output=conv_param.num_output, next_layer=None)
                         self.insert(new_p, new_d, layer_type='ConvolutionDepthwise',next_layer=None)
                         param = self.infer_pad_kernel(depth_V[0],origin_name=None, conv_param=conv_param)
-                        param['num_output'] = rank
                         self.set_conv(new_d,**param)
                         from_layer = new_d
                     else:
@@ -1127,11 +1153,10 @@ class Net():
                             self.insert(bottom, new_p, kernel_size=1, stride=1, pad=0, num_output=rank, next_layer=sums)
                             self.insert(new_p, new_d, layer_type='ConvolutionDepthwise',next_layer=sums)
                             param = self.infer_pad_kernel(depth_V[i],origin_name=None, conv_param=conv_param)
-                            param['num_output'] = rank
                             self.set_conv(new_d,**param)
                         from_layer = sums
                 else:
-                    V_param = self.infer_pad_kernel(V,conv)
+                    V_param = self.infer_pad_kernel(V,origin_name=conv)
                     self.set_conv(conv, new_name=conv_V, **V_param)
                     from_layer = conv_V
 
@@ -1172,8 +1197,132 @@ class Net():
 
                 t.toc('decoupling')
 
+            #channel decompostion and network decoupling
+            elif self.CD_param.enable and self.ND_param.enable:
+                conv_P = underline(conv, 'P')
+                W_shape = self.param_shape(conv)
+                d_prime = primedic[conv]
+
+                t.tic()
+                print('channel decomposition for ' + conv)
+                feats_dict, _ = self.extract_features(names=conv, points_dict=self._points_dict, save=1)
+                weights = self.param_data(conv)
+                #if conv in self.selection:
+                #        weights = weights[:,self.selection[conv],:,:]
+                Y = feats_dict[conv]
+                W1, W2, B, W12, R = ITQ_decompose(Y, self._feats_dict[conv], weights, d_prime, bias=self.param_b_data(conv), DEBUG=0, Wr=weights)
+
+                # set W to low rank W, asymetric solver
+                setConv(conv,W12.copy())
+                self.set_param_b(conv, B.copy())
+
+                # save W_prime and P params
+                W_prime_shape = [d_prime, weights.shape[1], weights.shape[2], weights.shape[3]]
+                P_shape = [W2.shape[0], W2.shape[1], 1, 1]
+                self.WPQ[(conv_P, 0)] = W2.reshape(P_shape)
+                self.WPQ[(conv_P, 1)] = B
+
+                self.insert(conv, conv_P, pad=0, kernel_size=1, bias=True, stride=1)
+                params = {'bias_term':True}
+                params.update(self.infer_pad_kernel(W1, conv))
+                self.set_conv(conv, **params)
+
+                if W_shape[2]*W_shape[3] == 1:
+                    #1x1 conv couldn't be decoupled
+                    self.WPQ[(conv, 0)] = W1.reshape(W_prime_shape)
+                    self.WPQ[(conv, 1)] = np.zeros(d_prime)
+                else:
+                    t.toc('channel_decomposition')
+                    print('decoupling for %s' % conv)
+                    t.tic()
+                    energy_ratio = self.ND_param.energy_threshold
+                    weights = W1.copy()
+                    depth, point, weights_approx = Network_decouple(weights, energy_threshold=energy_ratio)
+                    dim = weights_approx.shape
+                    weights_approx = np.transpose(weights_approx, [1,2,3,0])
+                    weights_approx = weights_approx.reshape(-1, dim[0])
+                    W12 = weights_approx.dot(R)
+            
+                    W12 = W12.reshape(dim[1:] + (W12.shape[1],))
+                    W12 = np.transpose(W12, [3,0,1,2])
+                    setConv(conv, W12.copy())
+
+                    sums = conv+'_sum'
+                    #bottom = self.bottom_names[conv][0]
+                    bottom = self.layer_bottom(conv)
+                    conv_param = caffe_pb2.ConvolutionParameter()
+                    conv_param.CopyFrom(self.conv_param(conv))
+                    if len(depth) == 1:
+                        self.remove(conv)
+                        new_p = conv + '_P0'
+                        new_d = conv + '_D0'
+                        self.WPQ[(new_p,0)] = point[0]
+                        self.WPQ[(new_d,0)] = depth[0]
+                        if conv_param.bias_term:
+                            self.WPQ[(new_d,1)] = np.zeros(d_prime)
+                            bias = True
+                        else:
+                            bias = False
+                        self.insert(bottom, new_p, pad=0, kernel_size=1, bias=True, stride=1, num_output=conv_param.num_output, next_layer=None)
+                        self.insert(new_p, new_d, layer_type='ConvolutionDepthwise', \
+                            kernel_size=conv_param.kernel_size[:], stride=conv_param.stride[:],\
+                             pad=conv_param.pad[:], bias=bias, num_output=conv_param.num_output, next_layer=None)
+                    else:
+                        self.insert(conv, sums, layer_type='Eltwise') 
+                        self.remove(conv)
+                        for i in range(len(point)):
+                            new_p = conv + '_P' + str(i)
+                            new_d = conv + '_D' + str(i)
+                            self.WPQ[(new_p,0)] = point[i]
+                            self.WPQ[(new_d,0)] = depth[i]
+                            if i == 0 and conv_param.bias_term:
+                                self.WPQ[(new_d,1)] = np.zeros(d_prime)
+                                bias = True
+                            else:
+                                bias = False
+                            self.insert(bottom, new_p, pad=0, kernel_size=1, bias=True, stride=1, num_output=conv_param.num_output, next_layer=sums)
+                            self.insert(new_p, new_d, layer_type='ConvolutionDepthwise', \
+                                kernel_size=conv_param.kernel_size[:], stride=conv_param.stride[:],\
+                                 pad=conv_param.pad[:], bias=bias, num_output=conv_param.num_output, next_layer=sums)
+
+                    t.toc('decoupling')
+
+            #only channel decomposition
+            elif self.CD_param.enable:
+                conv_P = underline(conv, 'P')
+                W_shape = self.param_shape(conv)
+                d_prime = primedic[conv]
+
+                t.tic()
+                feats_dict, _ = self.extract_features(names=conv, points_dict=self._points_dict, save=1)
+                weights = self.param_data(conv)
+
+                Y = feats_dict[conv]
+                W1, W2, B, W12, R = ITQ_decompose(Y, self._feats_dict[conv], weights, d_prime, bias=self.param_b_data(conv), DEBUG=0, Wr=weights)
+
+                # set W to low rank W, asymetric solver
+                setConv(conv,W12.copy())
+                self.set_param_b(conv, B.copy())
+
+                # save W_prime and P params
+                W_prime_shape = [d_prime, weights.shape[1], weights.shape[2], weights.shape[3]]
+                P_shape = [W2.shape[0], W2.shape[1], 1, 1]
+                self.WPQ[(conv, 0)] = W1.reshape(W_prime_shape)
+                self.WPQ[(conv, 1)] = np.zeros(d_prime)
+                self.WPQ[(conv_P, 0)] = W2.reshape(P_shape)
+                self.WPQ[(conv_P, 1)] = B
+
+                self.insert(conv, conv_P, pad=0, kernel_size=1, bias=True, stride=1)
+
+                t.toc('channel_decomposition')
+
             #only spatial decomposition
             elif self.SD_param.enable:
+                # neither of ND and SD could process 1x1 conv, so pass such layers
+                W_shape = self.param_shape(conv)
+                if W_shape[2]==1 and W_shape[3]==1:
+                    continue
+                    
                 conv_V = underline(conv, 'V')              
                 conv_H = underline(conv, 'H')
                 rank = rankdic[conv]
@@ -1223,6 +1372,11 @@ class Net():
 
             #only network decoupling
             elif self.ND_param.enable:
+                # neither of ND and SD could process 1x1 conv, so pass such layers
+                W_shape = self.param_shape(conv)
+                if W_shape[2]==1 and W_shape[3]==1:
+                    continue
+                    
                 et = self.ND_param.energy_threshold
                 weights = self.param_data(conv)
                 t.tic()
@@ -1240,7 +1394,7 @@ class Net():
                     new_d = conv + '_D0'
                     self.WPQ[(new_p,0)] = point[0]
                     self.WPQ[(new_d,0)] = depth[0]
-                    if i == 0 and conv_param.bias_term:
+                    if conv_param.bias_term:
                         self.WPQ[(new_d,1)] = self.param_b_data(conv)
                         bias = True
                     else:

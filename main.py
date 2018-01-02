@@ -28,10 +28,16 @@ def decomp_step2(pt, weight, WPQ, check_exist=False, **kwargs):
     net = Net(pt=pt, model=weight)
     model = net.finalmodel(WPQ) # loads weights into the caffemodel
 
-    if 'SD_param' in kwargs:
-        data = kwargs['SD_param']['data_driven']
+    if 'CD_param' in kwargs:
+        data = kwargs['CD_param']['enable']
     else:
-        data = cfgs.SD_param['data_driven']
+        data = cfgs.CD_param['enable']
+
+    if not data:
+        if 'SD_param' in kwargs:
+            data = kwargs['SD_param']['data_driven']
+        else:
+            data = cfgs.SD_param['data_driven']
 
     if 'mask_layers' in kwargs:
         mask = kwargs['mask_layers']
@@ -55,10 +61,17 @@ def decomp_step4(pt,weight,WPQ,**kwargs):
     # load weight
     net = Net(pt=pt,model=weight)
     new_model = net.finalmodel(WPQ=WPQ, save=False)
-    if 'SD_param' in kwargs:
-        data = kwargs['SD_param']['data_driven']
+    if 'CD_param' in kwargs:
+        data = kwargs['CD_param']['enable']
     else:
-        data = cfgs.SD_param['data_driven']
+        data = cfgs.CD_param['enable']
+
+    if not data:
+        if 'SD_param' in kwargs:
+            data = kwargs['SD_param']['data_driven']
+        else:
+            data = cfgs.SD_param['data_driven']
+            
     if data:
         net.dis_memory()
     new_pt, new_model = net.save(prefix='new')
@@ -73,6 +86,7 @@ def decomp(pt, weight, **kwargs):
         kwargs: other params as follows
             ND_param: EasyDict object, contain parameters of network deoupling
             SD_param: EasyDict object, contain parameters of spatial decomposition
+            CD_param: EasyDict object, contain parameters of channel decomposition
             device_id: int, determine the device number (CPU or GPU) to use
             nSamples: int, number of samples when using data-driven approach
             nPointsPerSample: int, number of points sampled per sample when using data-driven approach
@@ -111,13 +125,14 @@ def parse_args():
     parser = argparse.ArgumentParser("decouple CNN")
     parser.add_argument('-sd',dest='sd',help='enable spatial decomposition',action='store_true')
     parser.add_argument('-nd',dest='nd',help='enable network decoupling',action='store_true')
+    parser.add_argument('-cd',dest='cd',help='enable channel decompostion',action='store_true')
     parser.add_argument('-data',dest='data',help='enable data driven for spatial decomposition',action='store_true')
-    parser.add_argument('-speed', dest='speed', help='sd speed up ratio of spatial decomposition', default=3.0, type=float)
-    parser.add_argument('-threshold', dest='threshold', help='energy threshold for network decouple',default=0.95,type=float)
+    parser.add_argument('-speed', dest='speed', help='sd speed up ratio of spatial decomposition', default=None, type=float)
+    parser.add_argument('-threshold', dest='threshold', help='energy threshold for network decouple',default=None,type=float)
     parser.add_argument('-gpu', dest='gpu', help='caffe devices', default=None, type=int)
     parser.add_argument('-model', dest='model', help='caffe prototxt file path', default=None, type=str)
     parser.add_argument('-weight', dest='weight', help='caffemodel file path', default=None, type=str)
-    parser.add_argument('-action', dest='action', help='action', default='decomp',\
+    parser.add_argument('-action', dest='action', help='compute, test or decompose the model', default='decomp',\
      type=str,choices=['decomp','compute','test'])
     parser.add_argument('-iterations', dest='iter', help='test iterations', type=int)
 
@@ -132,13 +147,17 @@ if __name__ == '__main__':
     if args.action == 'decomp':
         ND_param = edict()
         SD_param = edict()
+        CD_param = edict()
+        CD_param['c_ratio'] = args.speed
+        CD_param['enable'] = args.cd
         SD_param['c_ratio'] = args.speed
         SD_param['enable'] = args.sd
         SD_param['data_driven'] = args.data
         ND_param['enable'] = args.nd
         ND_param['energy_threshold'] = args.threshold
         mask_layers = cfgs.mask_layers
-        decomp(pt=args.model,weight=args.weight,SD_param=SD_param,ND_param=ND_param,gpu=args.gpu,mask_layers=mask_layers)
+        decomp(pt=args.model,weight=args.weight,SD_param=SD_param,ND_param=ND_param,CD_param=CD_param
+            ,gpu=args.gpu,mask_layers=mask_layers)
     elif args.action == 'compute':
         compute(pt=args.model,model=args.weight)
     elif args.action == 'test':

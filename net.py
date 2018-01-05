@@ -10,7 +10,7 @@ from warnings import warn
 import pickle
 import config as cfgs
 
-from decompose import VH_decompose, Network_decouple
+from decompose import VH_decompose, Network_decouple, ITQ_decompose
 from builder import Net as NetBuilder
 from utils import underline, OK, shell, Timer
 
@@ -47,6 +47,7 @@ class Net():
         else:
             self.data_layer = 'data'
         if self.get_layer(self.data_layer).type=='MemoryData':
+            # to define if use set_input_arrays to get data from memory
             self._mem = True
         else:
             self._mem = False
@@ -348,6 +349,9 @@ class Net():
                     self.forward()
                     set_points_dict((batch, 0), self.data().copy())
                     set_points_dict((batch, 1), self.label().copy())
+                else:
+                    self.net.set_input_arrays(points_dict[(batch, 0)], points_dict[(batch, 1)])
+                    self.forward()
             else:
                 self.forward()
 
@@ -612,13 +616,15 @@ class Net():
         if cfgs.dataset=='imagenet':
             i.transform_param.crop_size = 224
             i.transform_param.mirror = False
-            i.transform_param.mean_value.extend([104.0,117.0,123.0])
+            if len(i.transform_param.mean_value) == 0:
+                i.transform_param.mean_value.extend([104.0,117.0,123.0])
             i.data_param.source = cfgs.imagenet_val
-            i.data_param.batch_size = 25
+            i.data_param.batch_size = 20
             i.data_param.backend = i.data_param.LMDB
         elif cfgs.dataset=='cifar10':
             i.transform_param.scale = .0078125
-            i.transform_param.mean_value.extend([128])
+            if len(i.transform_param.mean_value) == 0:
+                i.transform_param.mean_value.extend([128])
             i.transform_param.mirror = False
             i.data_param.source = cfgs.cifar10_val
             i.data_param.batch_size = 128
@@ -1023,25 +1029,27 @@ class Net():
         convs= self.convs
         self.WPQ = dict()
 
-        rankdic = dict()
-        for layer in convs:
-            if layer not in self.mask_layers:
-                wshape = self.param_shape(layer)
-                co = wshape[0]
-                ci = wshape[1]
-                h = wshape[2]
-                w = wshape[3]
-                rankdic[layer] = int((ci*co*h*w)/(sd_speed_ratio*(h*ci+w*co)))
+        if self.SD_param.enable:
+            rankdic = dict()
+            for layer in convs:
+                if layer not in self.mask_layers:
+                    wshape = self.param_shape(layer)
+                    co = wshape[0]
+                    ci = wshape[1]
+                    h = wshape[2]
+                    w = wshape[3]
+                    rankdic[layer] = int((ci*co*h*w)/(sd_speed_ratio*(h*ci+w*co)))
 
-        primedict = dict()
-        for layer in convs:
-            if layer not in self.mask_layers:
-                wshape = self.param_shape(layer)
-                co = wshape[0]
-                ci = wshape[1]
-                h = wshape[2]
-                w = wshape[3]
-                primedict[layer] = int((ci*co*h*w)/(cd_speed_ratio)*(h*w*ci+co))
+        if self.CD_param.enable:
+            primedict = dict()
+            for layer in convs:
+                if layer not in self.mask_layers:
+                    wshape = self.param_shape(layer)
+                    co = wshape[0]
+                    ci = wshape[1]
+                    h = wshape[2]
+                    w = wshape[3]
+                    primedict[layer] = int((ci*co*h*w)/(cd_speed_ratio*(h*w*ci+co)))
 
 
         def getX(name):
@@ -1136,7 +1144,7 @@ class Net():
                         new_d = conv + '_D0'
                         self.WPQ[(new_p,0)] = point_V[0]
                         self.WPQ[(new_d,0)] = depth_V[0]
-                        self.insert(bottom, new_p, pad=0, kernel_size=1, stride=1, num_output=conv_param.num_output, next_layer=None)
+                        self.insert(bottom, new_p, pad=0, kernel_size=1, stride=1, num_output=rank, next_layer=None)
                         self.insert(new_p, new_d, layer_type='ConvolutionDepthwise',next_layer=None)
                         param = self.infer_pad_kernel(depth_V[0],origin_name=None, conv_param=conv_param)
                         self.set_conv(new_d,**param)
@@ -1156,7 +1164,7 @@ class Net():
                             self.set_conv(new_d,**param)
                         from_layer = sums
                 else:
-                    V_param = self.infer_pad_kernel(V,origin_name=conv)
+                    V_param = self.infer_pad_kernel(V,origin_name=None, conv_param=conv_param)
                     self.set_conv(conv, new_name=conv_V, **V_param)
                     from_layer = conv_V
 
@@ -1192,7 +1200,7 @@ class Net():
                 else:
                     self.insert(from_layer, conv_H)
                     H_params = {'bias':True}
-                    H_params.update(self.infer_pad_kernel(H, origin_name=conv))
+                    H_params.update(self.infer_pad_kernel(H, origin_name=None, conv_param=conv_param))
                     self.set_conv(conv_H, **H_params)
 
                 t.toc('decoupling')
@@ -1200,15 +1208,14 @@ class Net():
             #channel decompostion and network decoupling
             elif self.CD_param.enable and self.ND_param.enable:
                 conv_P = underline(conv, 'P')
+                conv_new = underline(conv, 'new')
                 W_shape = self.param_shape(conv)
-                d_prime = primedic[conv]
+                d_prime = primedict[conv]
 
                 t.tic()
                 print('channel decomposition for ' + conv)
                 feats_dict, _ = self.extract_features(names=conv, points_dict=self._points_dict, save=1)
                 weights = self.param_data(conv)
-                #if conv in self.selection:
-                #        weights = weights[:,self.selection[conv],:,:]
                 Y = feats_dict[conv]
                 W1, W2, B, W12, R = ITQ_decompose(Y, self._feats_dict[conv], weights, d_prime, bias=self.param_b_data(conv), DEBUG=0, Wr=weights)
 
@@ -1223,20 +1230,22 @@ class Net():
                 self.WPQ[(conv_P, 1)] = B
 
                 self.insert(conv, conv_P, pad=0, kernel_size=1, bias=True, stride=1)
-                params = {'bias_term':True}
-                params.update(self.infer_pad_kernel(W1, conv))
+                weights = W1.reshape(W_prime_shape).copy()
+                params = {'bias':True}
+                params.update(self.infer_pad_kernel(weights, conv))
                 self.set_conv(conv, **params)
 
                 if W_shape[2]*W_shape[3] == 1:
                     #1x1 conv couldn't be decoupled
-                    self.WPQ[(conv, 0)] = W1.reshape(W_prime_shape)
-                    self.WPQ[(conv, 1)] = np.zeros(d_prime)
+                    self.WPQ[(conv_new, 0)] = weights
+                    self.WPQ[(conv_new, 1)] = np.zeros(d_prime)
+                    self.set_conv(conv, new_name=conv_new)
                 else:
                     t.toc('channel_decomposition')
                     print('decoupling for %s' % conv)
                     t.tic()
                     energy_ratio = self.ND_param.energy_threshold
-                    weights = W1.copy()
+                    
                     depth, point, weights_approx = Network_decouple(weights, energy_threshold=energy_ratio)
                     dim = weights_approx.shape
                     weights_approx = np.transpose(weights_approx, [1,2,3,0])
@@ -1263,7 +1272,7 @@ class Net():
                             bias = True
                         else:
                             bias = False
-                        self.insert(bottom, new_p, pad=0, kernel_size=1, bias=True, stride=1, num_output=conv_param.num_output, next_layer=None)
+                        self.insert(bottom, new_p, pad=0, kernel_size=1, bias=False, stride=1, num_output=conv_param.num_output, next_layer=None)
                         self.insert(new_p, new_d, layer_type='ConvolutionDepthwise', \
                             kernel_size=conv_param.kernel_size[:], stride=conv_param.stride[:],\
                              pad=conv_param.pad[:], bias=bias, num_output=conv_param.num_output, next_layer=None)
@@ -1280,7 +1289,7 @@ class Net():
                                 bias = True
                             else:
                                 bias = False
-                            self.insert(bottom, new_p, pad=0, kernel_size=1, bias=True, stride=1, num_output=conv_param.num_output, next_layer=sums)
+                            self.insert(bottom, new_p, pad=0, kernel_size=1, bias=False, stride=1, num_output=conv_param.num_output, next_layer=sums)
                             self.insert(new_p, new_d, layer_type='ConvolutionDepthwise', \
                                 kernel_size=conv_param.kernel_size[:], stride=conv_param.stride[:],\
                                  pad=conv_param.pad[:], bias=bias, num_output=conv_param.num_output, next_layer=sums)
@@ -1290,8 +1299,9 @@ class Net():
             #only channel decomposition
             elif self.CD_param.enable:
                 conv_P = underline(conv, 'P')
+                conv_new = underline(conv, 'new')
                 W_shape = self.param_shape(conv)
-                d_prime = primedic[conv]
+                d_prime = primedict[conv]
 
                 t.tic()
                 feats_dict, _ = self.extract_features(names=conv, points_dict=self._points_dict, save=1)
@@ -1307,12 +1317,15 @@ class Net():
                 # save W_prime and P params
                 W_prime_shape = [d_prime, weights.shape[1], weights.shape[2], weights.shape[3]]
                 P_shape = [W2.shape[0], W2.shape[1], 1, 1]
-                self.WPQ[(conv, 0)] = W1.reshape(W_prime_shape)
-                self.WPQ[(conv, 1)] = np.zeros(d_prime)
+                self.WPQ[(conv_new, 0)] = W1.reshape(W_prime_shape)
+                self.WPQ[(conv_new, 1)] = np.zeros(d_prime)
                 self.WPQ[(conv_P, 0)] = W2.reshape(P_shape)
                 self.WPQ[(conv_P, 1)] = B
 
                 self.insert(conv, conv_P, pad=0, kernel_size=1, bias=True, stride=1)
+                params = self.infer_pad_kernel(self.WPQ[(conv_new,0)], conv)
+                params['bias'] = True
+                self.set_conv(conv, new_name=conv_new , **params)
 
                 t.toc('channel_decomposition')
 
@@ -1399,7 +1412,7 @@ class Net():
                         bias = True
                     else:
                         bias = False
-                    self.insert(bottom, new_p, pad=0, kernel_size=1, bias=True, stride=1, num_output=conv_param.num_output, next_layer=None)
+                    self.insert(bottom, new_p, pad=0, kernel_size=1, bias=False, stride=1, num_output=conv_param.num_output, next_layer=None)
                     self.insert(new_p, new_d, layer_type='ConvolutionDepthwise', \
                         kernel_size=conv_param.kernel_size[:], stride=conv_param.stride[:],\
                          pad=conv_param.pad[:], bias=bias, num_output=conv_param.num_output, next_layer=None)
@@ -1416,7 +1429,7 @@ class Net():
                             bias = True
                         else:
                             bias = False
-                        self.insert(bottom, new_p, pad=0, kernel_size=1, bias=True, stride=1, num_output=conv_param.num_output, next_layer=sums)
+                        self.insert(bottom, new_p, pad=0, kernel_size=1, bias=False, stride=1, num_output=conv_param.num_output, next_layer=sums)
                         self.insert(new_p, new_d, layer_type='ConvolutionDepthwise', \
                             kernel_size=conv_param.kernel_size[:], stride=conv_param.stride[:],\
                              pad=conv_param.pad[:], bias=bias, num_output=conv_param.num_output, next_layer=sums)                    

@@ -18,7 +18,7 @@ class Net():
     def __init__(self, pt, model=None, phase = caffe.TEST, accname=None, mask_layers=None,\
         SD_param=None, ND_param=None, CD_param=None, gpu=None, nSamples=None, nPointsPerSample=None, frozen_name=None):
 
-        self.caffe_device()
+        # self.caffe_device()
         if gpu is None:
             gpu = cfgs.device_id
         assert gpu >= -1
@@ -61,6 +61,7 @@ class Net():
         self.nPointsPerSample = nPointsPerSample if nPointsPerSample is not None else cfgs.nPointsPerSample
         self.frozen_name = frozen_name if frozen_name is not None else cfgs.frozen_name
 
+        self.resnet = 'res' in self.pt_dir
         self.acc=[]
 
         self.WPQ={} # stores pruned values, which will be saved to caffemodel later (since Net structure couldn't be dynamically changed in caffe)
@@ -370,35 +371,37 @@ class Net():
                         TODO: optimize the data-driven SD in res-block or dense block structure
                         by using sum output for feature reconstruction
                         """
-                        """
-                        if dcfgs.dic.option == cfgs.pruning_options.resnet:
+                        
+                        if self.resnet:
                             branchrandxy = None
                             branch1name = '_branch1'
-                            branch2cname = '_branch2c'
+                            branch2cname = '_branch2b'
                             if name in self.sums:
-                                #embed()
-                                nextblock = self.sums[self.sums.index(name)+1]
-                                nextb1 = nextblock + branch1name
-                                if not nextb1 in names:
-                                    # the previous sum and branch2c will be identical
-                                    branchrandxy = nextblock + branch2cname
-                            elif name in self.bns:
-                                if dcfgs.model == cfgs.Models.xception:
-                                    branchrandxy = 'interstellar' + name.split('bn')[1].split('_')[0] + branch2cname
-                                elif dcfgs.model == cfgs.Models.resnet:
-                                    branchrandxy = 'res' + name.split('bn')[1].split('_')[0] + branch2cname
-                                    #print("correpondance", branchrandxy)
+                                # the previous sum and branch2b will be identical
+                                branchrandxy = name + branch2cname
+                            
+                            if branch2cname in name:
+                                branchrandxy = name.replace(branch2cname, branch1name)
+                                if branchrandxy not in self.convs:
+                                    branchrandxy = None
+
                             if branchrandxy is not None:
                                 if 0: print('pointsdict of', branchrandxy, 'identical with', name)
                                 randx = points_dict[(batch, branchrandxy , "randx")]
                                 randy = points_dict[(batch, branchrandxy , "randy")]
-                        """
+                        
                         set_points_dict((batch, name, "randx"), randx.copy())
                         set_points_dict((batch, name, "randy"), randy.copy())
 
                     else:
-                        randx = points_dict[(batch, name, "randx")]
-                        randy = points_dict[(batch, name, "randy")]
+                        if name not in self.sums:
+                            randx = points_dict[(batch, name, "randx")]
+                            randy = points_dict[(batch, name, "randy")]
+                        else:
+                            # extract the same position as next sum groud truth on each feature map
+                            next_sum = self.sums[self.sums.index(name)+1]
+                            randx = points_dict[(batch, next_sum, "randx")]
+                            randy = points_dict[(batch, next_sum, "randy")]
                 else:
                     randx = np.random.randint(0, shape[0]-0, nPointsPerLayer)
                     randy = np.random.randint(0, shape[1]-0, nPointsPerLayer)
@@ -848,9 +851,9 @@ class Net():
             for conv in layers:
                 l.append(self.layercomputation(conv))
         comp = sum(l)
-        print("flops", comp)
         for conv,i in zip(layers, l):
             print(conv, i, float(i*1000./comp))
+        print("flops", comp)
         return comp
 
     def getBNaff(self, bn, affine, scale=1.):
@@ -959,13 +962,15 @@ class Net():
         # seperate ReLU from proceeding layers
         relus = self.type2names(layer_type='ReLU')
         for relu in relus:
-            if self.top_names[relu][0] == self.bottom_names[relu][0]:
-                proceed = self.net_param.layer[relu][0].bottom
-                assert len(proceed) == 1
-                self.net_param.ch_top(relu, relu, proceed[0])
+            top = self.net_param.layer[relu][0].top[0]
+            bottom = self.net_param.layer[relu][0].bottom[0]
+            if top == bottom and top not in self.bns:
+                # proceed = self.net_param.layer[relu][0].bottom
+                # assert len(proceed) == 1
+                self.net_param.ch_top(relu, relu, top)
                 for i in self.net_param.layer:
                     if i != relu:
-                        self.net_param.ch_bottom(i, relu, proceed[0])
+                        self.net_param.ch_bottom(i, relu, bottom)
 
         new_pt = self.save_pt(prefix = 'relu_separ')
         return new_pt
@@ -1214,10 +1219,29 @@ class Net():
 
                 t.tic()
                 print('channel decomposition for ' + conv)
+                branch2cname = '_branch2b'
+                branch1name = '_branch1'
                 feats_dict, _ = self.extract_features(names=conv, points_dict=self._points_dict, save=1)
                 weights = self.param_data(conv)
                 Y = feats_dict[conv]
-                W1, W2, B, W12, R = ITQ_decompose(Y, self._feats_dict[conv], weights, d_prime, bias=self.param_b_data(conv), DEBUG=0, Wr=weights)
+                if not self.resnet or '_branch2b' not in conv:
+                    gt_Y = self._feats_dict[conv]
+                else:
+                    # for res-connection part, use ground truth summation to correct the output
+                    error_feat_branch = conv.replace(branch2cname, branch1name)
+                    sum_name = conv.replace(branch2cname,'')
+                    have_relu = False
+                    if branch1 not in self.convs:
+                        error_feat_branch = self.sums[self.sums.index(sum_name)-1]
+                        have_relu = True
+
+                    error_feats_dict, _ = self.extract_features(names=error_feat_branch, points_dict=self._points_dict, save=1)
+                    if have_relu: # relu operation   
+                        error_feats_dict[error_feat_branch][error_feats_dict[error_feat_branch]<0]=0
+
+                    gt_Y = self._feats_dict[sum_name] - error_feats_dict[error_feat_branch]
+
+                W1, W2, B, W12, R = ITQ_decompose(Y, gt_Y, weights, d_prime, bias=self.param_b_data(conv), DEBUG=0, Wr=None)
 
                 # set W to low rank W, asymetric solver
                 setConv(conv,W12.copy())
@@ -1304,11 +1328,30 @@ class Net():
                 d_prime = primedict[conv]
 
                 t.tic()
+                branch2cname = '_branch2b'
+                branch1name = '_branch1'
                 feats_dict, _ = self.extract_features(names=conv, points_dict=self._points_dict, save=1)
                 weights = self.param_data(conv)
+                Y = feats_dict[conv]
+                if (not self.resnet or '_branch2b') not in conv:
+                    gt_Y = self._feats_dict[conv]
+                else:
+                    # for res-connection part, use ground truth summation to correct the output
+                    error_feat_branch = conv.replace(branch2cname, branch1name)
+                    sum_name = conv.replace(branch2cname,'')
+                    have_relu = False
+                    if error_feat_branch not in self.convs:
+                        error_feat_branch = self.sums[self.sums.index(sum_name)-1]
+                        have_relu = True
+
+                    error_feats_dict, _ = self.extract_features(names=error_feat_branch, points_dict=self._points_dict, save=1)
+                    if have_relu: # relu operation   
+                        error_feats_dict[error_feat_branch][error_feats_dict[error_feat_branch]<0]=0
+
+                    gt_Y = self._feats_dict[sum_name] - error_feats_dict[error_feat_branch]
 
                 Y = feats_dict[conv]
-                W1, W2, B, W12, R = ITQ_decompose(Y, self._feats_dict[conv], weights, d_prime, bias=self.param_b_data(conv), DEBUG=0, Wr=weights)
+                W1, W2, B, W12, R = ITQ_decompose(Y, gt_Y, weights, d_prime, bias=self.param_b_data(conv), DEBUG=0, Wr=weights)
 
                 # set W to low rank W, asymetric solver
                 setConv(conv,W12.copy())
@@ -1394,7 +1437,7 @@ class Net():
                 weights = self.param_data(conv)
                 t.tic()
                 
-                depth, point, approx = Network_decouple(weights, energy_threshold=et)
+                depth, point, approx = Network_decouple(weights, energy_threshold=et, rank=0)
                 setConv(conv, approx)
                 sums = conv+'_sum'
                 #bottom = self.bottom_names[conv][0]

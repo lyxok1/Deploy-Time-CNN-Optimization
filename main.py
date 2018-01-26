@@ -45,7 +45,9 @@ def decomp_step2(pt, weight, WPQ, check_exist=False, **kwargs):
         mask = cfgs.mask_layers
 
     if data:
-        sample_convs = [conv for conv in net.type2names() if conv not in mask]
+        sample_convs = [conv for conv in net.type2names()]
+        if net.resnet:
+            sample_convs += net.type2names('Eltwise')
         net.freeze_images(check_exist=check_exist, convs=sample_convs)
         return {'WPQ':WPQ, 'pt':mem_pt(pt), 'model':model}
     else:
@@ -95,14 +97,14 @@ def decomp(pt, weight, **kwargs):
     """
     wk = Worker()
     printstage('preprocessing network')
-    out = wk.do(target=decomp_step1,pt=pt,weight=weight)
+    out = wk.do(target=decomp_step1,pt=pt, weight=weight)
     # sample for data driven method
     printstage('sample data for reconstruction')
-    out = wk.do(target=decomp_step2,pt=out['pt'],weight=out['model'],WPQ=out['WPQ'],**kwargs)
+    out = wk.do(target=decomp_step2,pt=out['pt'], weight=out['model'],WPQ=out['WPQ'],**kwargs)
     printstage('decoupling and saving weight results')
-    out = wk.do(target=decomp_step3,pt=out['pt'],weight=out['model'],**kwargs)
+    out = wk.do(target=decomp_step3,pt=out['pt'], weight=out['model'],**kwargs)
     printstage('loading new model and save')
-    result = wk.do(target=decomp_step4,**out, **kwargs)
+    result = wk.do(target=decomp_step4, **out, **kwargs)
     print('save decouple results:')
     print(result['new_pt'])
     print(result['new_model'])

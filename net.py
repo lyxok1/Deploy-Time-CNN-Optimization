@@ -10,7 +10,7 @@ from warnings import warn
 import pickle
 import config as cfgs
 
-from decompose import VH_decompose, Network_decouple, ITQ_decompose
+from decompose import VH_decompose, Network_decouple, ITQ_decompose, kernel_svd
 from builder import Net as NetBuilder
 from utils import underline, OK, shell, Timer
 
@@ -61,7 +61,7 @@ class Net():
         self.nPointsPerSample = nPointsPerSample if nPointsPerSample is not None else cfgs.nPointsPerSample
         self.frozen_name = frozen_name if frozen_name is not None else cfgs.frozen_name
 
-        self.resnet = 'res' in self.pt_dir
+        self.resnet = False # 'res' in self.pt_dir or 'Res' in self.pt_dir
         self.acc=[]
 
         self.WPQ={} # stores pruned values, which will be saved to caffemodel later (since Net structure couldn't be dynamically changed in caffe)
@@ -879,7 +879,7 @@ class Net():
         BNs = self.type2names("BatchNorm")
         Affines = self.type2names("Scale")
         ReLUs = self.type2names("ReLU")
-        Convs = self.type2names()
+        Convs = self.type2names() + self.type2names("InnerProduct")
         assert len(BNs) == len(Affines)
 
         WPQ = dict()
@@ -979,7 +979,7 @@ class Net():
         for conv in self.type2names('Convolution'):
             if len(self.param(conv)) < 2:
                 new_name = underline('bias', conv)
-                self.set_conv(conv, bias=True)
+                self.set_conv(conv, new_name=new_name , bias=True)
                 no = self.param_shape(conv)[0]
                 WPQ[(new_name, 1)] = np.zeros(no)
                 if (conv, 0) in WPQ:
@@ -1072,10 +1072,10 @@ class Net():
             self.load_frozen()
 
         for conv in decouple_convs:
+            W_shape = self.param_shape(conv)
             """spatial decomposition and network decoupling at the same time"""
             if self.SD_param.enable and self.ND_param.enable:
                 # neither of ND and SD could process 1x1 conv, so pass such layers
-                W_shape = self.param_shape(conv)
                 if W_shape[2]==1 and W_shape[3]==1:
                     continue
 
@@ -1231,7 +1231,7 @@ class Net():
                     error_feat_branch = conv.replace(branch2cname, branch1name)
                     sum_name = conv.replace(branch2cname,'')
                     have_relu = False
-                    if branch1 not in self.convs:
+                    if error_feat_branch not in self.convs:
                         error_feat_branch = self.sums[self.sums.index(sum_name)-1]
                         have_relu = True
 
@@ -1322,6 +1322,9 @@ class Net():
 
             #only channel decomposition
             elif self.CD_param.enable:
+                if W_shape[3] > 1:
+                    continue
+
                 conv_P = underline(conv, 'P')
                 conv_new = underline(conv, 'new')
                 W_shape = self.param_shape(conv)
@@ -1333,7 +1336,7 @@ class Net():
                 feats_dict, _ = self.extract_features(names=conv, points_dict=self._points_dict, save=1)
                 weights = self.param_data(conv)
                 Y = feats_dict[conv]
-                if (not self.resnet or '_branch2b') not in conv:
+                if not self.resnet or '_branch2b' not in conv:
                     gt_Y = self._feats_dict[conv]
                 else:
                     # for res-connection part, use ground truth summation to correct the output
@@ -1429,53 +1432,67 @@ class Net():
             #only network decoupling
             elif self.ND_param.enable:
                 # neither of ND and SD could process 1x1 conv, so pass such layers
-                W_shape = self.param_shape(conv)
-                if W_shape[2]==1 and W_shape[3]==1:
-                    continue
-                    
                 et = self.ND_param.energy_threshold
                 weights = self.param_data(conv)
-                t.tic()
-                
-                depth, point, approx = Network_decouple(weights, energy_threshold=et, rank=0)
-                setConv(conv, approx)
-                sums = conv+'_sum'
-                #bottom = self.bottom_names[conv][0]
-                bottom = self.layer_bottom(conv)
                 conv_param = caffe_pb2.ConvolutionParameter()
                 conv_param.CopyFrom(self.conv_param(conv))
-                if len(depth) == 1:
-                    self.remove(conv)
-                    new_p = conv + '_P0'
-                    new_d = conv + '_D0'
-                    self.WPQ[(new_p,0)] = point[0]
-                    self.WPQ[(new_d,0)] = depth[0]
+                t.tic()
+
+                if W_shape[2]==1 and W_shape[3]==1:
+                    continue
+                    """
+                    # only for densenet 1x1 svd test
+                    U, V = kernel_svd(weights, ratio=et)
+                    rank = U.shape[1]
+                    conv_L = underline(conv,'L')
+                    conv_R = underline(conv,'R')
+
+                    self.WPQ[conv_R] = V
+                    self.WPQ[(conv_L, 0)] = U
                     if conv_param.bias_term:
-                        self.WPQ[(new_d,1)] = self.param_b_data(conv)
-                        bias = True
-                    else:
-                        bias = False
-                    self.insert(bottom, new_p, pad=0, kernel_size=1, bias=False, stride=1, num_output=conv_param.num_output, next_layer=None)
-                    self.insert(new_p, new_d, layer_type='ConvolutionDepthwise', \
-                        kernel_size=conv_param.kernel_size[:], stride=conv_param.stride[:],\
-                         pad=conv_param.pad[:], bias=bias, num_output=conv_param.num_output, next_layer=None)
-                else:
-                    self.insert(conv, sums, layer_type='Eltwise') 
-                    self.remove(conv)
-                    for i in range(len(point)):
-                        new_p = conv + '_P' + str(i)
-                        new_d = conv + '_D' + str(i)
-                        self.WPQ[(new_p,0)] = point[i]
-                        self.WPQ[(new_d,0)] = depth[i]
-                        if i == 0 and conv_param.bias_term:
+                        self.WPQ[(conv_L, 1)] = self.param_b_data(conv).copy()
+
+                    self.insert(conv, conv_L, pad=0, kernel_size=1, bias=conv_param.bias_term, stride=1,
+                        num_output=conv_param.num_output ,next_layer=None)
+                    self.set_conv(conv, new_name=conv_R, bias=False, num_output=rank)
+                    """
+                else:              
+                    depth, point, approx = Network_decouple(weights, energy_threshold=et, rank=0)
+                    sums = conv+'_sum'
+                    #bottom = self.bottom_names[conv][0]
+                    bottom = self.layer_bottom(conv)
+                    if len(depth) == 1:
+                        self.remove(conv)
+                        new_p = conv + '_P0'
+                        new_d = conv + '_D0'
+                        self.WPQ[(new_p,0)] = point[0]
+                        self.WPQ[(new_d,0)] = depth[0]
+                        if conv_param.bias_term:
                             self.WPQ[(new_d,1)] = self.param_b_data(conv)
                             bias = True
                         else:
                             bias = False
-                        self.insert(bottom, new_p, pad=0, kernel_size=1, bias=False, stride=1, num_output=conv_param.num_output, next_layer=sums)
+                        self.insert(bottom, new_p, pad=0, kernel_size=1, bias=False, stride=1, num_output=conv_param.num_output, next_layer=None)
                         self.insert(new_p, new_d, layer_type='ConvolutionDepthwise', \
                             kernel_size=conv_param.kernel_size[:], stride=conv_param.stride[:],\
-                             pad=conv_param.pad[:], bias=bias, num_output=conv_param.num_output, next_layer=sums)                    
+                             pad=conv_param.pad[:], bias=bias, num_output=conv_param.num_output, next_layer=None)
+                    else:
+                        self.insert(conv, sums, layer_type='Eltwise') 
+                        self.remove(conv)
+                        for i in range(len(point)):
+                            new_p = conv + '_P' + str(i)
+                            new_d = conv + '_D' + str(i)
+                            self.WPQ[(new_p,0)] = point[i]
+                            self.WPQ[(new_d,0)] = depth[i]
+                            if i == 0 and conv_param.bias_term:
+                                self.WPQ[(new_d,1)] = self.param_b_data(conv)
+                                bias = True
+                            else:
+                                bias = False
+                            self.insert(bottom, new_p, pad=0, kernel_size=1, bias=False, stride=1, num_output=conv_param.num_output, next_layer=sums)
+                            self.insert(new_p, new_d, layer_type='ConvolutionDepthwise', \
+                                kernel_size=conv_param.kernel_size[:], stride=conv_param.stride[:],\
+                                 pad=conv_param.pad[:], bias=bias, num_output=conv_param.num_output, next_layer=sums)                    
                 t.toc("network decoupling")
             else:
                 pass

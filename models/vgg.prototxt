@@ -37,7 +37,7 @@ layer {
   data_param {
     source: "/data/sdd/data/ILSVRC2012/lmdb/ilsvrc12_train_lmdb"
     backend: LMDB
-    batch_size: 10
+    batch_size: 25
   }
   include {
     phase: TRAIN

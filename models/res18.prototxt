@@ -17,7 +17,7 @@ layer {
     data_param {
         source: "/data/sde/jli59/jianbo/lmdb/ilsvrc12_train_lmdb"
         backend: LMDB
-        batch_size: 25
+        batch_size: 10
   }
 }
 

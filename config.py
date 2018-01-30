@@ -20,14 +20,15 @@ ND_param['enable'] = True
 CD_param['c_ratio'] = 2
 # enable trigger for CD
 CD_param['enable'] = False 
-
+ 
 
 # dict containg layers not requiring spatial decomposition
 # mask_layers = ['conv1_1','conv5_3']
-mask_layers = ['res%da_branch2a' % i for i in range(3,6)] + ['res%da_branch1' % i for i in range(2,6)] + ['conv1']
+# mask_layers = ['res%da_branch2a' % i for i in range(3,6)] + ['res%da_branch1' % i for i in range(2,6)] + ['conv1']
 # mask_layers = ['conv1','fc6']
 # mask_layers = ['conv5_%d' % i for i in range(1,4)] + ['conv4_3']
-# mask_layers = ['conv1','conv2']
+mask_layers = ['conv1','fc6'] + ['conv5_%d/x1' % i for i in range(1,17)] + ['bias_conv5_%d/x2' % i for i in range(1,17)] + ['conv%d_blk' % i for i in range(2,5)]
+# mask_layers = ['conv1','fc6']
 
 # gpu device (-1 for CPU)
 device_id = 0
@@ -38,7 +39,7 @@ data_layer = 'data'
 # the dataset used for data reconstruction
 dataset = 'imagenet'
 # samples of batches for data reconstruction
-nSamples = 500
+nSamples = 600
 # extract how many points per sample
 nPointsPerSample = 10
 # accurate or mAP layer names for data driven method (default value is accuracy@5 in vgg-16)

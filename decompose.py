@@ -127,7 +127,7 @@ def VH_decompose(weights, rank=None, DEBUG=0, X=None, Y=None):
         N = Xv.shape[0]
         o = H.shape[0]
         H, b = nonlinear_fc(Xv.reshape([N, -1]), Y)
-        H = H.reshape([o, rank, 1, 3])
+        H = H.reshape([o, rank, 1, dim[3]])
         reH = np.transpose(H, [1,0,2,3]).reshape([rank,-1])
         VHr = (origV.dot(reH)).reshape([dim[1], dim[2], dim[0], dim[3]])
 
@@ -678,7 +678,7 @@ def nonlinear_fc(X, Y, copy_X=True, W=None, B=None):
             U = solve_relu(RU, Z, l)
     return reg.coef_, reg.intercept_
 
-def Network_decouple(kernel, energy_threshold=0.95):
+def Network_decouple(kernel, energy_threshold=0.95, rank=0):
     """
     kernel: of shape (n_o, n_i, h, w)
     """
@@ -704,11 +704,15 @@ def Network_decouple(kernel, energy_threshold=0.95):
         energy_ratio_list[non_zero_idx_energy, i] = np.sum(sigma_list[non_zero_idx_energy, :i+1]**2, 1) / energy_sum[non_zero_idx_energy]
     energy_ratio_list_ave = np.mean(energy_ratio_list[non_zero_idx_energy], 0)
     print('energy ratio (as num_items increases)' + str(energy_ratio_list_ave))
-    for i in range(num_sig_value):
-        if energy_ratio_list_ave[i] >= energy_threshold:
-            break
-    num_items = i + 1 #how many items needed for certain energy ratio
-    print('num_items needed for energy ratio threshold {}: {}'.format(energy_threshold, num_items))
+    if rank > 0:
+        num_items = rank
+        print('num_items selected by hand: {}'.format(num_items))
+    else:
+        for i in range(num_sig_value):
+            if energy_ratio_list_ave[i] >= energy_threshold:
+                break
+        num_items = i + 1 #how many items needed for certain energy ratio
+        print('num_items needed for energy ratio threshold {}: {}'.format(energy_threshold, num_items))
 
     #compute PW+DW kernel and kernel_ for lasso
     kernel_base_list = [] #DW
@@ -728,3 +732,30 @@ def Network_decouple(kernel, energy_threshold=0.95):
 
     return kernel_base_list, weights_list ,kernel_
 
+def kernel_svd(weight, ratio=0.95):
+    dim = weight.shape
+    m = weight.reshape(dim[0], -1)
+    num_sig_value = np.minimum(dim[0], dim[1]*dim[2]*dim[3])
+
+    sigma_list = np.zeros((num_sig_value,))
+
+    U, sigma, V = np.linalg.svd(m)
+
+    sum_energy = np.sum(sigma**2)
+    sigma_list[...] = sigma**2/sum_energy
+
+    for i in range(num_sig_value):
+        if np.sum(sigma_list[:(i+1)]) >= ratio:
+            rank = i + 1
+            break
+
+    if 1:
+        print('sigma list:')
+        print(sigma_list)
+        print('decouple %d x %d ==> (%d x %d), (%d x %d)' % (dim[0],dim[1],dim[0],rank, rank, dim[1]))
+
+    U = U[:, :rank]
+    V = np.diag(sigma[:rank]).dot(V[:rank,:])
+    U = U[:,:, np.newaxis, np.newaxis]
+    V = V[:,:, np.newaxis, np.newaxis]
+    return U, V

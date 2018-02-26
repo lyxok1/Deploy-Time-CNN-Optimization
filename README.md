@@ -17,7 +17,7 @@ The current network supported: VGG-16, ResNet series, DenseNet series and AlexNe
 1. Python3 packages you might not have: `scipy`, `sklearn`, `easydict`, use `sudo pip3 install` to install.
 2. An NVIDIA GPU is recommanded.
 
-### Installation (sufficient for the demo)
+### Installation
 1. Clone the repository of Caffe and compile it
     ```Shell
     git clone https://github.com/BVLC/caffe.git

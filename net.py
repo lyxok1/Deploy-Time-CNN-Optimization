@@ -261,6 +261,9 @@ class Net():
     def conv_param(self, conv):
         return self.get_layer(conv).convolution_param
 
+    def corr_param(self, conv):
+        return self.get_layer(conv).correlation_param
+
     def set_conv(self, conv, num_output=0, new_name=None, pad_h=None, pad_w=None, kernel_h=None, kernel_w=None, stride=None, bias=None,group=None):
         conv_param = self.conv_param(conv)
         if num_output != 0:
@@ -821,24 +824,30 @@ class Net():
         assert len(bottom) == 1
         bottom = bottom[0]
         s = self.blobs_shape(bottom)
-        p = self.param_shape(conv)
-        if conv in self.convs:
-            channels *= p[1]
-            outputs *= p[0]
-            c = s[2]*s[3]*outputs*channels*p[2]*p[3] / self.conv_param_stride(conv)**2
-        elif conv in self.spation_convs:
-            if conv in self.type2names('ConvolutionDepthwise'):
-                c = s[2]*s[3]*p[1]*p[2]*p[3] / self.conv_param_stride(conv)**2
-            else:
-                group = self.conv_param(conv).group
-                assert p[0]%group==0
-                outputs *= p[0]
-                channels *= p[1]/group
-                c = s[2]*s[3]*outputs*channels*p[2]*p[3] / self.conv_param_stride(conv)**2
-        elif conv in self.innerproduct:
-            c = p[0]*p[1]
+        if conv in self.type2names('Correlation'):
+            param = self.corr_param(conv)
+            patch = (param.displacement*2+1)**2
+            channels *= s[1]
+            c = s[2]*s[3]*channels*patch
         else:
-            pass
+            p = self.param_shape(conv)
+            if conv in self.convs:
+                channels *= p[1]
+                outputs *= p[0]
+                c = s[2]*s[3]*outputs*channels*p[2]*p[3] / self.conv_param_stride(conv)**2
+            elif conv in self.spation_convs:
+                if conv in self.type2names('ConvolutionDepthwise'):
+                    c = s[2]*s[3]*p[1]*p[2]*p[3] / self.conv_param_stride(conv)**2
+                else:
+                    group = self.conv_param(conv).group
+                    assert p[0]%group==0
+                    outputs *= p[0]
+                    channels *= p[1]/group
+                    c = s[2]*s[3]*outputs*channels*p[2]*p[3] / self.conv_param_stride(conv)**2
+            elif conv in self.innerproduct:
+                c = p[0]*p[1]
+            else:
+                pass
         return int(c)
 
     def computation(self, params=False):
@@ -847,7 +856,7 @@ class Net():
             NotImplementedError
         else:
             l = []
-            layers = self.convs + self.spation_convs + self.innerproduct
+            layers = self.convs + self.spation_convs + self.innerproduct + self.type2names('Correlation')
             for conv in layers:
                 l.append(self.layercomputation(conv))
         comp = sum(l)

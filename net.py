@@ -831,7 +831,7 @@ class Net():
             c = s[2]*s[3]*channels*patch
         else:
             p = self.param_shape(conv)
-            if conv in self.convs:
+            if conv in self.convs and conv not in self.spation_convs:
                 channels *= p[1]
                 outputs *= p[0]
                 c = s[2]*s[3]*outputs*channels*p[2]*p[3] / self.conv_param_stride(conv)**2

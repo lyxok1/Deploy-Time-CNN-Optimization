@@ -12,7 +12,13 @@ SD_param['c_ratio'] = 3
 SD_param['enable'] = False
 
 # threshold of energy ratio for network decoupling
-ND_param['energy_threshold'] = 0.9
+ND_param['energy_threshold'] = None
+# decouple a convolution kernel by given rank number instead of energy_ratio
+# set to 0 when not using this flag
+# for a kernel of size (no, nin, h, w), the inequality should hold: rank <= min(nin, h*w)
+ND_param['rank'] = 0
+# set True to specify to decouple a network kernel with DW + PW convolution, False to use PW + DW (default)
+ND_param['DP'] = False
 # enable trigger for ND
 ND_param['enable'] = True
 
@@ -22,8 +28,8 @@ CD_param['c_ratio'] = 2
 CD_param['enable'] = False 
  
 
-# dict containg layers not requiring spatial decomposition
-mask_layers = ['conv1','fc6']
+# list containg layers not requiring decomposition
+mask_layers = ['conv1_1','conv5_1','conv5_2','conv5_3']
 
 # gpu device (-1 for CPU)
 device_id = 0
@@ -34,11 +40,11 @@ data_layer = 'data'
 # the dataset used for data reconstruction
 dataset = 'imagenet'
 # samples of batches for data reconstruction
-nSamples = 600
+nSamples = 500
 # extract how many points per sample
 nPointsPerSample = 10
 # accurate or mAP layer names for data driven method (default value is accuracy@5 in vgg-16)
-accname = 'acc/top-5'
+accname = 'accuracy@5'
 # the name of frozen pickle to store sample points
 frozen_name = 'frozen'
 # test param

@@ -678,57 +678,115 @@ def nonlinear_fc(X, Y, copy_X=True, W=None, B=None):
             U = solve_relu(RU, Z, l)
     return reg.coef_, reg.intercept_
 
-def Network_decouple(kernel, energy_threshold=0.95, rank=0):
+def Network_decouple(kernel, energy_threshold=0.95, rank=0, DP=False):
     """
     kernel: of shape (n_o, n_i, h, w)
     """
     n_o, n_i, h, w = kernel.shape
-    num_sig_value = np.minimum(n_i, h*w)
-    kernel_re = kernel.reshape(n_o, n_i, -1)
-    U_list = []
-    sigma_list = np.zeros((n_o, num_sig_value))
-    V_list = []
-    for output_index in range(n_o):
-        U, sigma, V = np.linalg.svd(kernel_re[output_index, :, :])
-        U_list.append(U)
-        V_list.append(V)
-        sigma_list[output_index] = sigma #if kernel_re[output_index]=0, sigma = [0, ..., 0]
-
-    #compute how many items needed for certain energy ratio
-    #here we only consider VGG16, so len(sigma) = 9 except conv1_1 (3)
-    energy_ratio_list = np.zeros((n_o, num_sig_value))
-    energy_sum = np.sum(sigma_list**2, 1)
-    non_zero_idx_energy = (energy_sum != 0)
-
-    for i in range(num_sig_value):
-        energy_ratio_list[non_zero_idx_energy, i] = np.sum(sigma_list[non_zero_idx_energy, :i+1]**2, 1) / energy_sum[non_zero_idx_energy]
-    energy_ratio_list_ave = np.mean(energy_ratio_list[non_zero_idx_energy], 0)
-    print('energy ratio (as num_items increases)' + str(energy_ratio_list_ave))
-    if rank > 0:
-        num_items = rank
-        print('num_items selected by hand: {}'.format(num_items))
-    else:
-        for i in range(num_sig_value):
-            if energy_ratio_list_ave[i] >= energy_threshold:
-                break
-        num_items = i + 1 #how many items needed for certain energy ratio
-        print('num_items needed for energy ratio threshold {}: {}'.format(energy_threshold, num_items))
-
-    #compute PW+DW kernel and kernel_ for lasso
-    kernel_base_list = [] #DW
-    weights_list = [] #PW
-    kernel_ = np.zeros((n_o, n_i, h, w))
-    for i in range(num_items):
-        tmp_base = np.zeros((n_o, h, w))
-        tmp_weights = np.zeros((n_o, n_i))
+    if not DP:
+        num_sig_value = np.minimum(n_i, h*w)
+        kernel_re = kernel.reshape(n_o, n_i, -1)
+        U_list = []
+        sigma_list = np.zeros((n_o, num_sig_value))
+        V_list = []
         for output_index in range(n_o):
-            tmp_base[output_index] = V_list[output_index][i].reshape(h, w)
-            tmp_weights[output_index] = U_list[output_index][:, i]*sigma_list[output_index, i]
-        kernel_base_list.append(tmp_base[:, np.newaxis, :, :]) #(n_o, 1, h, w)
-        weights_list.append(tmp_weights[:, :, np.newaxis, np.newaxis]) #to do in the later. (n_o, n_i, 1, 1)
-    for output_index in range(n_o):
-        kernel_[output_index] = (U_list[output_index][:, :num_items].dot(np.diag(sigma_list\
-                    [output_index, :num_items])).dot(V_list[output_index][:num_items, :])).reshape(n_i, h, w)
+            U, sigma, V = np.linalg.svd(kernel_re[output_index, :, :])
+            U_list.append(U)
+            V_list.append(V)
+            sigma_list[output_index] = sigma #if kernel_re[output_index]=0, sigma = [0, ..., 0]
+
+        #compute how many items needed for certain energy ratio
+        #here we only consider VGG16, so len(sigma) = 9 except conv1_1 (3)
+        energy_ratio_list = np.zeros((n_o, num_sig_value))
+        energy_sum = np.sum(sigma_list**2, 1)
+        non_zero_idx_energy = (energy_sum != 0)
+
+        for i in range(num_sig_value):
+            energy_ratio_list[non_zero_idx_energy, i] = np.sum(sigma_list[non_zero_idx_energy, :i+1]**2, 1) / energy_sum[non_zero_idx_energy]
+        energy_ratio_list_ave = np.mean(energy_ratio_list[non_zero_idx_energy], 0)
+        print('energy ratio (as num_items increases)' + str(energy_ratio_list_ave))
+        if rank > 0:
+            num_items = rank
+            assert rank <= num_sig_value
+            print('num_items selected by hand: {}'.format(num_items))
+        else:
+            for i in range(num_sig_value):
+                if energy_ratio_list_ave[i] >= energy_threshold:
+                    break
+            num_items = i + 1 #how many items needed for certain energy ratio
+            print('num_items needed for energy ratio threshold {}: {}'.format(energy_threshold, num_items))
+
+        #compute PW+DW kernel and kernel_ for lasso
+        kernel_base_list = [] #DW
+        weights_list = [] #PW
+        kernel_ = np.zeros((n_o, n_i, h, w)) # equal regular kernel
+        for i in range(num_items):
+            tmp_base = np.zeros((n_o, h, w))
+            tmp_weights = np.zeros((n_o, n_i))
+            for output_index in range(n_o):
+                tmp_base[output_index] = V_list[output_index][i].reshape(h, w)
+                tmp_weights[output_index] = U_list[output_index][:, i]*sigma_list[output_index, i]
+            kernel_base_list.append(tmp_base[:, np.newaxis, :, :]) #(n_o, 1, h, w)
+            weights_list.append(tmp_weights[:, :, np.newaxis, np.newaxis]) #to do in the later. (n_o, n_i, 1, 1)
+        for output_index in range(n_o):
+            kernel_[output_index] = (U_list[output_index][:, :num_items].dot(np.diag(sigma_list\
+                        [output_index, :num_items])).dot(V_list[output_index][:num_items, :])).reshape(n_i, h, w)
+    else:
+        kernel_t = np.transpose(kernel, (1, 0, 2, 3)) # [n_i, n_o, h, w]
+        num_sig_value = np.minimum(n_o, h*w)
+        kernel_re = kernel_t.reshape(n_i, n_o, -1)
+        U_list = []
+        sigma_list = np.zeros((n_i, num_sig_value))
+        V_list = []
+        for input_index in range(n_i):
+            U, sigma, V = np.linalg.svd(kernel_re[input_index, :, :])
+            U_list.append(U)
+            V_list.append(V)
+            sigma_list[input_index] = sigma #if kernel_re[output_index]=0, sigma = [0, ..., 0]
+
+        #compute how many items needed for certain energy ratio
+        #here we only consider VGG16, so len(sigma) = 9 except conv1_1 (3)
+        energy_ratio_list = np.zeros((n_i, num_sig_value))
+        energy_sum = np.sum(sigma_list**2, 1)
+        non_zero_idx_energy = (energy_sum != 0)
+
+        for i in range(num_sig_value):
+            energy_ratio_list[non_zero_idx_energy, i] = np.sum(sigma_list[non_zero_idx_energy, :i+1]**2, 1) / energy_sum[non_zero_idx_energy]
+        energy_ratio_list_ave = np.mean(energy_ratio_list[non_zero_idx_energy], 0)
+        print('energy ratio (as num_items increases)' + str(energy_ratio_list_ave))
+        if rank > 0:
+            num_items = rank
+            assert rank <= num_sig_value
+            print('num_items selected by hand: {}'.format(num_items))
+        else:
+            for i in range(num_sig_value):
+                if energy_ratio_list_ave[i] >= energy_threshold:
+                    break
+            num_items = i + 1 #how many items needed for certain energy ratio
+            print('num_items needed for energy ratio threshold {}: {}'.format(energy_threshold, num_items))
+
+        #compute PW+DW kernel and kernel_ for lasso
+        kernel_base_list = [] #DW
+        weights_list = [] #PW
+        kernel_ = np.zeros((n_i, n_o, h, w)) # transposed equal regular kernel
+        for i in range(num_items):
+            tmp_base = np.zeros((n_i, h, w))
+            tmp_weights = np.zeros((n_o, n_i))
+            for input_index in range(n_i):
+                tmp_base[input_index] = V_list[input_index][i].reshape(h, w)
+
+            for output_index in range(n_o):
+                 tmp = [U_list[j][output_index, i]*sigma_list[j, i] for j in range(len(U_list))]
+                 tmp = np.array(tmp, dtype=np.float32) # [n_i]
+                 tmp_weights[output_index] = tmp[...]
+
+            kernel_base_list.append(tmp_base[:, np.newaxis, :, :]) #(n_o, 1, h, w)
+            weights_list.append(tmp_weights[:, :, np.newaxis, np.newaxis]) #to do in the later. (n_o, n_i, 1, 1)
+
+        for input_index in range(n_i):
+            kernel_[input_index] = (U_list[input_index][:, :num_items].dot(np.diag(sigma_list\
+                        [input_index, :num_items])).dot(V_list[input_index][:num_items, :])).reshape(n_o, h, w)
+        kernel_ = np.transpose(kernel_, (1, 0, 2, 3))
 
     return kernel_base_list, weights_list ,kernel_
 

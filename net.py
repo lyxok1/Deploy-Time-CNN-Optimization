@@ -683,7 +683,7 @@ class Net():
         return self._layers[layer_type]
 
 
-    def insert(self, bottom, name=None, layer_type="Convolution", bringforward=True, update_nodes=None, bringto=None, next_layer=None,**kwargs):
+    def insert(self, bottom, name=None, layer_type="Convolution", bringforward=True, update_nodes=None, bringto=None, DP=False, next_layer=None,**kwargs):
         if layer_type=="Convolution":
             # insert
             self.net_param.set_cur(bottom)
@@ -702,7 +702,11 @@ class Net():
             for i in update_nodes:
                 if i == name:
                     continue
-                if next_layer is None:
+                if self.net_param.layer[i][0].type == 'Eltwise' and self.net_param.layer[i][0].name == next_layer and DP:
+                    # for eltwise summation, add one bottom instead of change
+                    self.net_param.layer[i][0].bottom.extend([name])
+                    self.net_param.layer[i][0].eltwise_param.coeff.extend([1.0])
+                elif next_layer is None:
                     self.net_param.ch_bottom(i, name, bottom)
 
             # for i, bot in self.bottom_names.items():
@@ -725,11 +729,11 @@ class Net():
             for i in update_nodes:
                 if i == name:
                     continue
-                if self.net_param.layer[i][0].type == 'Eltwise' and self.net_param.layer[i][0].name == next_layer:
+                if self.net_param.layer[i][0].type == 'Eltwise' and self.net_param.layer[i][0].name == next_layer and not DP:
                     # for eltwise summation, add one bottom instead of change
                     self.net_param.layer[i][0].bottom.extend([name])
                     self.net_param.layer[i][0].eltwise_param.coeff.extend([1.0])
-                else:
+                elif next_layer is None:
                     self.net_param.ch_bottom(i, name, bottom)
 
             if bringforward:
@@ -1014,7 +1018,8 @@ class Net():
     def decompose(self):
         sd_speed_ratio = self.SD_param.c_ratio
         cd_speed_ratio = self.CD_param.c_ratio
-
+        DP = self.ND_param.DP
+        r = self.ND_param.rank
         # now we are not implementing the combination of sd + cd
         if self.SD_param.enable and self.CD_param.enable:
             NotImplementedError
@@ -1117,7 +1122,7 @@ class Net():
                 energy_ratio = self.ND_param.energy_threshold
                 weights = V # rank, c, h, 1
                 
-                depth_V, point_V, weights_approx = Network_decouple(weights, energy_threshold=energy_ratio)
+                depth_V, point_V, weights_approx = Network_decouple(weights, energy_threshold=energy_ratio, rank=r, DP=DP)
                 decouple_V = False
                 V_approx = V
                 if len(depth_V) < W_shape[2]:
@@ -1129,7 +1134,7 @@ class Net():
                 '''decoupling for H'''
                 weights = H # rank, c, h, 1
                 decouple_H = False
-                depth_H, point_H, weights_approx = Network_decouple(weights, energy_threshold=energy_ratio)
+                depth_H, point_H, weights_approx = Network_decouple(weights, energy_threshold=energy_ratio, rank=r, DP=DP)
                 H_approx = H
                 if len(depth_H) < W_shape[3]:
                     decouple_H = True
@@ -1158,11 +1163,18 @@ class Net():
                         new_d = conv + '_D0'
                         self.WPQ[(new_p,0)] = point_V[0]
                         self.WPQ[(new_d,0)] = depth_V[0]
-                        self.insert(bottom, new_p, pad=0, kernel_size=1, stride=1, num_output=rank, next_layer=None)
-                        self.insert(new_p, new_d, layer_type='ConvolutionDepthwise',next_layer=None)
-                        param = self.infer_pad_kernel(depth_V[0],origin_name=None, conv_param=conv_param)
-                        self.set_conv(new_d,**param)
-                        from_layer = new_d
+                        if not DP:
+                            self.insert(bottom, new_p, pad=0, kernel_size=1, stride=1, num_output=rank, next_layer=None)
+                            self.insert(new_p, new_d, layer_type='ConvolutionDepthwise',next_layer=None)
+                            param = self.infer_pad_kernel(depth_V[0],origin_name=None, conv_param=conv_param)
+                            self.set_conv(new_d,**param)
+                            from_layer = new_d
+                        else:
+                            self.insert(bottom, new_d, layer_type='ConvolutionDepthwise',next_layer=None)
+                            self.insert(new_d, new_p, pad=0, kernel_size=1, stride=1, num_output=rank, next_layer=None)
+                            param = self.infer_pad_kernel(depth_V[0],origin_name=None, conv_param=conv_param)
+                            self.set_conv(new_d,**param)
+                            from_layer = new_p
                     else:
                         sums = conv_V+'_sum'
                         self.insert(conv, sums, layer_type='Eltwise')
@@ -1172,10 +1184,16 @@ class Net():
                             new_d = conv_V + '_D' + str(i)
                             self.WPQ[(new_p,0)] = point_V[i]
                             self.WPQ[(new_d,0)] = depth_V[i]
-                            self.insert(bottom, new_p, kernel_size=1, stride=1, pad=0, num_output=rank, next_layer=sums)
-                            self.insert(new_p, new_d, layer_type='ConvolutionDepthwise',next_layer=sums)
-                            param = self.infer_pad_kernel(depth_V[i],origin_name=None, conv_param=conv_param)
-                            self.set_conv(new_d,**param)
+                            if not DP:
+                                self.insert(bottom, new_p, kernel_size=1, stride=1, pad=0, num_output=rank, next_layer=sums)
+                                self.insert(new_p, new_d, layer_type='ConvolutionDepthwise',next_layer=sums)
+                                param = self.infer_pad_kernel(depth_V[i],origin_name=None, conv_param=conv_param)
+                                self.set_conv(new_d,**param)
+                            else:
+                                self.insert(bottom, new_d, layer_type='ConvolutionDepthwise',next_layer=sums, DP=DP)
+                                self.insert(new_d, new_p, kernel_size=1, stride=1, pad=0, num_output=rank, next_layer=sums, DP=DP)
+                                param = self.infer_pad_kernel(depth_V[i],origin_name=None, conv_param=conv_param)
+                                self.set_conv(new_d,**param)
                         from_layer = sums
                 else:
                     V_param = self.infer_pad_kernel(V,origin_name=None, conv_param=conv_param)
@@ -1189,12 +1207,22 @@ class Net():
                         self.WPQ[(new_p,0)] = point_H[0]
                         self.WPQ[(new_d,0)] = depth_H[0]
                         if conv_param.bias_term:
-                            self.WPQ[(new_d,1)] = self.param_b_data(conv)
-                        self.insert(from_layer, new_p, kernel_size=1, stride=1, pad=0, num_output=conv_param.num_output, next_layer=None)
-                        self.insert(new_p, new_d, layer_type='ConvolutionDepthwise', next_layer=None)
-                        H_param = self.infer_pad_kernel(depth_H[i], origin_name=None, conv_param=conv_param)
-                        H_param['bias'] = conv_param.bias_term
-                        self.set_conv(new_d,**H_param)
+                            if not DP:
+                                self.WPQ[(new_d,1)] = self.param_b_data(conv)
+                            else:
+                                self.WPQ[(new_p,1)] = self.param_b_data(conv)
+
+                        if not DP:
+                            self.insert(from_layer, new_p, kernel_size=1, stride=1, pad=0, num_output=conv_param.num_output, next_layer=None)
+                            self.insert(new_p, new_d, layer_type='ConvolutionDepthwise', next_layer=None)
+                            H_param = self.infer_pad_kernel(depth_H[0], origin_name=None, conv_param=conv_param)
+                            H_param['bias'] = conv_param.bias_term
+                            self.set_conv(new_d,**H_param)
+                        else:
+                            self.insert(from_layer, new_d, layer_type='ConvolutionDepthwise', next_layer=None)
+                            self.insert(new_d, new_p, kernel_size=1, stride=1, pad=0, bias=conv_param.bias_term, num_output=conv_param.num_output, next_layer=None)
+                            H_param = self.infer_pad_kernel(depth_H[0], origin_name=None, conv_param=conv_param)
+                            self.set_conv(new_d,**H_param)
                     else:
                         sums = conv_H+'_sum'
                         self.insert(from_layer, sums, layer_type='Eltwise')
@@ -1204,13 +1232,22 @@ class Net():
                             self.WPQ[(new_p,0)] = point_H[i]
                             self.WPQ[(new_d,0)] = depth_H[i]
                             if i==0 and conv_param.bias_term:
-                                self.WPQ[(new_d,1)] = self.param_b_data(conv)
-
-                            self.insert(from_layer, new_p, kernel_size=1, stride=1, pad=0, num_output=conv_param.num_output, next_layer=sums)
-                            self.insert(new_p, new_d, layer_type='ConvolutionDepthwise', next_layer=sums)
-                            H_param = self.infer_pad_kernel(depth_H[i], origin_name=None, conv_param=conv_param)
-                            H_param['bias'] = True if i==0 and conv_param.bias_term else False
-                            self.set_conv(new_d,**H_param)
+                                if not DP:
+                                    self.WPQ[(new_d,1)] = self.param_b_data(conv)
+                                else:
+                                    self.WPQ[(new_p,1)] = self.param_b_data(conv)
+                            if not DP:
+                                self.insert(from_layer, new_p, kernel_size=1, stride=1, pad=0, num_output=conv_param.num_output, next_layer=sums)
+                                self.insert(new_p, new_d, layer_type='ConvolutionDepthwise', next_layer=sums)
+                                H_param = self.infer_pad_kernel(depth_H[i], origin_name=None, conv_param=conv_param)
+                                H_param['bias'] = True if i==0 and conv_param.bias_term else False
+                                self.set_conv(new_d,**H_param)
+                            else:
+                                bias = True if i==0 and conv_param.bias_term else False
+                                self.insert(new_p, new_d, layer_type='ConvolutionDepthwise', next_layer=sums, DP=DP)
+                                self.insert(from_layer, new_p, kernel_size=1, stride=1, pad=0, bias=bias, num_output=conv_param.num_output, next_layer=sums, DP=DP)
+                                H_param = self.infer_pad_kernel(depth_H[i], origin_name=None, conv_param=conv_param)
+                                self.set_conv(new_d,**H_param)
                 else:
                     self.insert(from_layer, conv_H)
                     H_params = {'bias':True}
@@ -1279,7 +1316,7 @@ class Net():
                     t.tic()
                     energy_ratio = self.ND_param.energy_threshold
                     
-                    depth, point, weights_approx = Network_decouple(weights, energy_threshold=energy_ratio)
+                    depth, point, weights_approx = Network_decouple(weights, energy_threshold=energy_ratio, rank=r, DP=DP)
                     dim = weights_approx.shape
                     weights_approx = np.transpose(weights_approx, [1,2,3,0])
                     weights_approx = weights_approx.reshape(-1, dim[0])
@@ -1301,14 +1338,27 @@ class Net():
                         self.WPQ[(new_p,0)] = point[0]
                         self.WPQ[(new_d,0)] = depth[0]
                         if conv_param.bias_term:
-                            self.WPQ[(new_d,1)] = np.zeros(d_prime)
+                            if not DP:
+                                self.WPQ[(new_d,1)] = np.zeros(d_prime)
+                            else:
+                                self.WPQ[(new_p,1)] = np.zeros(d_prime)
                             bias = True
                         else:
                             bias = False
-                        self.insert(bottom, new_p, pad=0, kernel_size=1, bias=False, stride=1, num_output=conv_param.num_output, next_layer=None)
-                        self.insert(new_p, new_d, layer_type='ConvolutionDepthwise', \
-                            kernel_size=conv_param.kernel_size[:], stride=conv_param.stride[:],\
-                             pad=conv_param.pad[:], bias=bias, num_output=conv_param.num_output, next_layer=None)
+
+                        if not DP:
+                            self.insert(bottom, new_p, pad=0, kernel_size=1, bias=False, stride=1, \
+                                num_output=conv_param.num_output, next_layer=None)
+                            self.insert(new_p, new_d, layer_type='ConvolutionDepthwise', \
+                                kernel_size=conv_param.kernel_size[:], stride=conv_param.stride[:],\
+                                 pad=conv_param.pad[:], bias=bias, num_output=conv_param.num_output, next_layer=None)
+                        else:
+                            self.insert(bottom, new_d, layer_type='ConvolutionDepthwise', \
+                                kernel_size=conv_param.kernel_size[:], stride=conv_param.stride[:],\
+                                 pad=conv_param.pad[:], bias=False, num_output=conv_param.num_output, next_layer=None)
+                            self.insert(new_d, new_p, pad=0, kernel_size=1, bias=bias, stride=1, \
+                                num_output=conv_param.num_output, next_layer=None)
+                            
                     else:
                         self.insert(conv, sums, layer_type='Eltwise') 
                         self.remove(conv)
@@ -1318,21 +1368,29 @@ class Net():
                             self.WPQ[(new_p,0)] = point[i]
                             self.WPQ[(new_d,0)] = depth[i]
                             if i == 0 and conv_param.bias_term:
-                                self.WPQ[(new_d,1)] = np.zeros(d_prime)
+                                if not DP:
+                                    self.WPQ[(new_d,1)] = np.zeros(d_prime)
+                                else:
+                                    self.WPQ[(new_p,1)] = np.zeros(d_prime)
                                 bias = True
                             else:
                                 bias = False
-                            self.insert(bottom, new_p, pad=0, kernel_size=1, bias=False, stride=1, num_output=conv_param.num_output, next_layer=sums)
-                            self.insert(new_p, new_d, layer_type='ConvolutionDepthwise', \
-                                kernel_size=conv_param.kernel_size[:], stride=conv_param.stride[:],\
-                                 pad=conv_param.pad[:], bias=bias, num_output=conv_param.num_output, next_layer=sums)
 
+                            if not DP:
+                                self.insert(bottom, new_p, pad=0, kernel_size=1, bias=False, stride=1, num_output=conv_param.num_output, next_layer=sums)
+                                self.insert(new_p, new_d, layer_type='ConvolutionDepthwise', \
+                                    kernel_size=conv_param.kernel_size[:], stride=conv_param.stride[:],\
+                                     pad=conv_param.pad[:], bias=bias, num_output=conv_param.num_output, next_layer=sums)
+                            else:
+                                self.insert(bottom, new_d, layer_type='ConvolutionDepthwise', \
+                                    kernel_size=conv_param.kernel_size[:], stride=conv_param.stride[:],\
+                                     pad=conv_param.pad[:], bias=False, num_output=conv_param.num_output, next_layer=sums, DP=DP)
+                                self.insert(new_d, new_p, pad=0, kernel_size=1, bias=bias, stride=1, num_output=conv_param.num_output, next_layer=sums, DP=DP)
+                                
                     t.toc('decoupling')
 
             #only channel decomposition
             elif self.CD_param.enable:
-                if W_shape[3] > 1:
-                    continue
 
                 conv_P = underline(conv, 'P')
                 conv_new = underline(conv, 'new')
@@ -1466,7 +1524,7 @@ class Net():
                     self.set_conv(conv, new_name=conv_R, bias=False, num_output=rank)
                     """
                 else:              
-                    depth, point, approx = Network_decouple(weights, energy_threshold=et, rank=0)
+                    depth, point, approx = Network_decouple(weights, energy_threshold=et, rank=r, DP=DP)
                     sums = conv+'_sum'
                     #bottom = self.bottom_names[conv][0]
                     bottom = self.layer_bottom(conv)
@@ -1477,14 +1535,25 @@ class Net():
                         self.WPQ[(new_p,0)] = point[0]
                         self.WPQ[(new_d,0)] = depth[0]
                         if conv_param.bias_term:
-                            self.WPQ[(new_d,1)] = self.param_b_data(conv)
+                            if not DP:
+                                self.WPQ[(new_d,1)] = self.param_b_data(conv)
+                            else:
+                                self.WPQ[(new_p,1)] = self.param_b_data(conv)
                             bias = True
                         else:
                             bias = False
-                        self.insert(bottom, new_p, pad=0, kernel_size=1, bias=False, stride=1, num_output=conv_param.num_output, next_layer=None)
-                        self.insert(new_p, new_d, layer_type='ConvolutionDepthwise', \
-                            kernel_size=conv_param.kernel_size[:], stride=conv_param.stride[:],\
-                             pad=conv_param.pad[:], bias=bias, num_output=conv_param.num_output, next_layer=None)
+
+                        if not DP:
+                            self.insert(bottom, new_p, pad=0, kernel_size=1, bias=False, stride=1, num_output=conv_param.num_output, next_layer=None)
+                            self.insert(new_p, new_d, layer_type='ConvolutionDepthwise', \
+                                kernel_size=conv_param.kernel_size[:], stride=conv_param.stride[:],\
+                                 pad=conv_param.pad[:], bias=bias, num_output=conv_param.num_output, next_layer=None)
+                        else:
+                            self.insert(bottom, new_d, layer_type='ConvolutionDepthwise', \
+                                kernel_size=conv_param.kernel_size[:], stride=conv_param.stride[:],\
+                                 pad=conv_param.pad[:], bias=False, num_output=conv_param.num_output, next_layer=None)
+                            self.insert(new_d, new_p, pad=0, kernel_size=1, bias=bias, stride=1, num_output=conv_param.num_output, next_layer=None)
+                            
                     else:
                         self.insert(conv, sums, layer_type='Eltwise') 
                         self.remove(conv)
@@ -1494,14 +1563,24 @@ class Net():
                             self.WPQ[(new_p,0)] = point[i]
                             self.WPQ[(new_d,0)] = depth[i]
                             if i == 0 and conv_param.bias_term:
-                                self.WPQ[(new_d,1)] = self.param_b_data(conv)
+                                if not DP:
+                                    self.WPQ[(new_d,1)] = self.param_b_data(conv)
+                                else:
+                                    self.WPQ[(new_p,1)] = self.param_b_data(conv)
                                 bias = True
                             else:
                                 bias = False
-                            self.insert(bottom, new_p, pad=0, kernel_size=1, bias=False, stride=1, num_output=conv_param.num_output, next_layer=sums)
-                            self.insert(new_p, new_d, layer_type='ConvolutionDepthwise', \
-                                kernel_size=conv_param.kernel_size[:], stride=conv_param.stride[:],\
-                                 pad=conv_param.pad[:], bias=bias, num_output=conv_param.num_output, next_layer=sums)                    
+
+                            if not DP:
+                                self.insert(bottom, new_p, pad=0, kernel_size=1, bias=False, stride=1, num_output=conv_param.num_output, next_layer=sums)
+                                self.insert(new_p, new_d, layer_type='ConvolutionDepthwise', \
+                                    kernel_size=conv_param.kernel_size[:], stride=conv_param.stride[:],\
+                                     pad=conv_param.pad[:], bias=bias, num_output=conv_param.num_output, next_layer=sums)
+                            else:
+                                self.insert(bottom, new_d, layer_type='ConvolutionDepthwise', \
+                                    kernel_size=conv_param.kernel_size[:], stride=conv_param.stride[:],\
+                                     pad=conv_param.pad[:], bias=False, num_output=conv_param.num_output, next_layer=sums, DP=DP)
+                                self.insert(new_d, new_p, pad=0, kernel_size=1, bias=bias, stride=1, num_output=conv_param.num_output, next_layer=sums, DP=DP)                    
                 t.toc("network decoupling")
             else:
                 pass

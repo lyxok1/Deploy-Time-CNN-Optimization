@@ -1355,7 +1355,7 @@ class Net():
                         else:
                             self.insert(bottom, new_d, layer_type='ConvolutionDepthwise', \
                                 kernel_size=conv_param.kernel_size[:], stride=conv_param.stride[:],\
-                                 pad=conv_param.pad[:], bias=False, num_output=conv_param.num_output, next_layer=None)
+                                 pad=conv_param.pad[:], bias=False, num_output=W_shape[1], next_layer=None)
                             self.insert(new_d, new_p, pad=0, kernel_size=1, bias=bias, stride=1, \
                                 num_output=conv_param.num_output, next_layer=None)
                             
@@ -1380,7 +1380,7 @@ class Net():
                                 self.insert(bottom, new_p, pad=0, kernel_size=1, bias=False, stride=1, num_output=conv_param.num_output, next_layer=sums)
                                 self.insert(new_p, new_d, layer_type='ConvolutionDepthwise', \
                                     kernel_size=conv_param.kernel_size[:], stride=conv_param.stride[:],\
-                                     pad=conv_param.pad[:], bias=bias, num_output=conv_param.num_output, next_layer=sums)
+                                     pad=conv_param.pad[:], bias=bias, num_output=W_shape[1], next_layer=sums)
                             else:
                                 self.insert(bottom, new_d, layer_type='ConvolutionDepthwise', \
                                     kernel_size=conv_param.kernel_size[:], stride=conv_param.stride[:],\
@@ -1551,7 +1551,7 @@ class Net():
                         else:
                             self.insert(bottom, new_d, layer_type='ConvolutionDepthwise', \
                                 kernel_size=conv_param.kernel_size[:], stride=conv_param.stride[:],\
-                                 pad=conv_param.pad[:], bias=False, num_output=conv_param.num_output, next_layer=None)
+                                 pad=conv_param.pad[:], bias=False, num_output=W_shape[1], next_layer=None)
                             self.insert(new_d, new_p, pad=0, kernel_size=1, bias=bias, stride=1, num_output=conv_param.num_output, next_layer=None)
                             
                     else:
@@ -1579,7 +1579,7 @@ class Net():
                             else:
                                 self.insert(bottom, new_d, layer_type='ConvolutionDepthwise', \
                                     kernel_size=conv_param.kernel_size[:], stride=conv_param.stride[:],\
-                                     pad=conv_param.pad[:], bias=False, num_output=conv_param.num_output, next_layer=sums, DP=DP)
+                                     pad=conv_param.pad[:], bias=False, num_output=W_shape[1], next_layer=sums, DP=DP)
                                 self.insert(new_d, new_p, pad=0, kernel_size=1, bias=bias, stride=1, num_output=conv_param.num_output, next_layer=sums, DP=DP)                    
                 t.toc("network decoupling")
             else:

@@ -76,6 +76,8 @@ def decomp_step4(pt,weight,WPQ,**kwargs):
             
     net.dis_memory()
     new_pt, new_model = net.save(prefix='new')
+    new_pt = net.seperateReLU()
+     
     return {'new_pt':new_pt, 'new_model':new_model}
 
 def decomp(pt, weight, **kwargs):
@@ -136,6 +138,8 @@ def parse_args():
     parser.add_argument('-action', dest='action', help='compute, test or decompose the model', default='decomp',\
      type=str,choices=['decomp','compute','test'])
     parser.add_argument('-iterations', dest='iter', help='test iterations', type=int)
+    parser.add_argument('-rank',dest='rank',help='rank for network decoupling', type=int)
+    parser.add_argument('-DP', dest='DP', help='flags to set DW + PW decouple (default is PW + DW)', action='store_true')
 
     args = parser.parse_args()
 
@@ -156,12 +160,14 @@ if __name__ == '__main__':
         SD_param['data_driven'] = args.data
         ND_param['enable'] = args.nd
         ND_param['energy_threshold'] = args.threshold
+        ND_param['rank'] = args.rank
+        ND_param['DP'] = args.DP
         mask_layers = cfgs.mask_layers
-        decomp(pt=args.model,weight=args.weight,SD_param=SD_param,ND_param=ND_param,CD_param=CD_param
-            ,gpu=args.gpu,mask_layers=mask_layers)
+        decomp(pt=args.model,weight=args.weight,SD_param=SD_param, ND_param=ND_param, CD_param=CD_param
+            ,gpu=args.gpu, mask_layers=mask_layers)
     elif args.action == 'compute':
         compute(pt=args.model,model=args.weight)
     elif args.action == 'test':
-        caffe_test(pt=args.model,model=args.weight,gpu=args.gpu, iterations=args.iter)
+        caffe_test(pt=args.model,model=args.weight, gpu=args.gpu, iterations=args.iter)
     else:
         NotImplementedError

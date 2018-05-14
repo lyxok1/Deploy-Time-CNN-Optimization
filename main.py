@@ -75,8 +75,8 @@ def decomp_step4(pt,weight,WPQ,**kwargs):
             data = cfgs.SD_param['data_driven']
             
     net.dis_memory()
-    new_pt, new_model = net.save(prefix='new')
     new_pt = net.seperateReLU()
+    new_pt, new_model = net.save(prefix='new')
      
     return {'new_pt':new_pt, 'new_model':new_model}
 

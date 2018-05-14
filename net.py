@@ -841,7 +841,7 @@ class Net():
                 c = s[2]*s[3]*outputs*channels*p[2]*p[3] / self.conv_param_stride(conv)**2
             elif conv in self.spation_convs:
                 if conv in self.type2names('ConvolutionDepthwise'):
-                    c = s[2]*s[3]*p[1]*p[2]*p[3] / self.conv_param_stride(conv)**2
+                    c = s[2]*s[3]*p[0]*p[2]*p[3] / self.conv_param_stride(conv)**2
                 else:
                     group = self.conv_param(conv).group
                     assert p[0]%group==0
@@ -892,7 +892,7 @@ class Net():
         BNs = self.type2names("BatchNorm")
         Affines = self.type2names("Scale")
         ReLUs = self.type2names("ReLU")
-        Convs = self.type2names() + self.type2names("InnerProduct")
+        Convs = self.type2names() + self.type2names("InnerProduct") + self.type2names("ConvolutionDepthwise")
         assert len(BNs) == len(Affines)
 
         WPQ = dict()

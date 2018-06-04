@@ -29,14 +29,14 @@ The current network supported: VGG-16, ResNet series, DenseNet series and AlexNe
 ```
 2. Clone this repository 
 ```Shell
-    git clone https://github.com/Betterthinking/network-decoupling.git
+    https://github.com/lyxok1/Deploy-Time-CNN-Optimization.git
 ```
     
 ### Usage  
 1. Download the original model files (.prototxt and .caffemodel) and move them to the directory of `models`
 
 2. Make proper configurations in `config.py`
-   To make sure the network optimization works well, please enter the file `config.py` and change the configuration of the parameters according to the comment above them. Here is an example of `config.py`
+   To make sure the network optimization works well, please enter the file `config.py` and change the configuration of the parameters according to the comment above them.
 
    Note, among the hyperparameters above the `SD_Param`,`ND_Param`,`CD_Param` and `device_id` could also be specified in command line (see section 3), while other parameters must be set correctly according to the comment above.
 

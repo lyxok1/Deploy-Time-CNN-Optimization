@@ -96,6 +96,17 @@ Here are some results from experiments conducted on VGG-16 network, the original
 
 ### Reference
 
-To know more details about channel decomposition and spatial decomposition, please refer to following papers.
+This work is based on our work *Network Decoupling: From Regular Convolution to Separable Depthwise Convolution (BMVC2018)*. If you think this is helpful for your research, please consider append following bibtex config in your latex file.
+
+```Latex
+@inproceedings{guo2018nd,
+  title = {{Network Decoupling}: From Regular Convolution to Separable Depthwise Convolution},
+  author = {Guo, Jianbo and Li, Yuxi and Li, Jianguo and Lin, Weiyao},
+  booktitle = {BMVC},
+  year = {2018}
+}
+```
+
+This repository is also referenced to the work of channel decomposition and spatial decomposition, to know more details about channel decomposition and spatial decomposition, please refer to following papers.
 - [Speeding up Convolutional Neural Networks with Low Rank Expansions](https://arxiv.org/abs/1405.3866)
 - [Accelerating Very Deep Convolutional Networks for Classification and Detection](https://arxiv.org/abs/1505.06798)

@@ -137,8 +137,8 @@ def parse_args():
     parser.add_argument('-weight', dest='weight', help='caffemodel file path', default=None, type=str)
     parser.add_argument('-action', dest='action', help='compute, test or decompose the model', default='decomp',\
      type=str,choices=['decomp','compute','test'])
-    parser.add_argument('-iterations', dest='iter', help='test iterations', type=int)
-    parser.add_argument('-rank',dest='rank',help='rank for network decoupling', type=int)
+    parser.add_argument('-iterations', dest='iter', help='test iterations', type=int, default=1)
+    parser.add_argument('-rank',dest='rank',help='rank for network decoupling', type=int, default=0)
     parser.add_argument('-DP', dest='DP', help='flags to set DW + PW decouple (default is PW + DW)', action='store_true')
 
     args = parser.parse_args()

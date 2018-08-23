@@ -95,7 +95,7 @@ Here are some results from experiments conducted on VGG-16 network, the original
 |SD(data)| 4.28G | 1% |
 
 ### Related Repository
-This project is built on the repository of (channel prunning)[https://github.com/yihui-he/channel-pruning], many thanks to the contributor of this work.
+This project is built on the repository of [channel pruning](https://github.com/yihui-he/channel-pruning), many thanks to the contributor of this work.
 
 ### Reference
 

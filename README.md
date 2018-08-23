@@ -94,6 +94,9 @@ Here are some results from experiments conducted on VGG-16 network, the original
 |SD(no data)| 7.20G | 1% |
 |SD(data)| 4.28G | 1% |
 
+### Related Repository
+This project is built on the repository of (channel prunning)[https://github.com/yihui-he/channel-pruning], many thanks to the contributor of this work.
+
 ### Reference
 
 This work is based on our work *Network Decoupling: From Regular Convolution to Separable Depthwise Convolution (BMVC2018)*. If you think this is helpful for your research, please consider append following bibtex config in your latex file.
